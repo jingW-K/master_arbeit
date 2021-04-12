@@ -1,0 +1,740 @@
+-- @path PLM=/testProject/PLM.ecore
+-- @path OWL=/testProject/OWL.ecore
+
+
+module PLM2OWL;
+create OUT: OWL from IN: PLM;
+
+helper def: addNamespace(s: String): String =
+	'http://www.w3.org/2001/XMLSchema#' + s;
+
+helper def: dataTypeMap: Map(String, String) =
+	Map{('String',
+			'http://www.w3.org/2001/XMLSchema#string'),
+			('Real',
+			'http://www.w3.org/2001/XMLSchema#real'),
+			('Integer',
+			'http://www.w3.org/2001/XMLSchema#Integer'),
+			('Natural',
+			'http://www.w3.org/2001/XMLSchema#unsignedInt'),
+			('Boolean',
+			'http://www.w3.org/2001/XMLSchema#boolean'),
+			('Probability',
+			'http://www.w3.org/2001/XMLSchema#unsignedFloat'),
+			('Percent',
+			'http://www.w3.org/2001/XMLSchema#unsignedDouble'),
+			('Money',
+			'http://www.w3.org/2001/XMLSchema#double'),
+			('Character',
+			'http://www.w3.org/2001/XMLSchema#string' )};
+
+helper def: getIntegerURI() : OclAny =
+	thisModule.resolveTemp( 
+		  
+			'u'
+	);
+			
+
+helper context PLM!Attribute def: isPrimitive(str: String): Boolean =
+	Sequence{'string',
+				'integer',
+				'real',
+				'natural',
+				'boolean',
+				'probability',
+				'character'} -> includes(str.toLowerCase());
+				
+helper context PLM!Connection def: isBinary(): Boolean =
+	self.connectionEnd->size() = 2;
+
+helper context PLM!Connection def: isReflexive: Boolean =
+	--all the participants are the same
+	self.getParticipants() -> size() = 1;
+--
+helper context PLM!Connection def: isSymmetric(): Boolean =
+self.connectionEnd -> select(con|con.kind=#Basic) -> size() = self.connectionEnd-> size();
+
+--refactoring parts
+--helpers to support pushDownAttributes(C.f, I)
+helper context PLM!Clabject def: getClassificationAsType(): Set(PLM!Classification) =
+	PLM!Classification.allInstances() -> select(i | i.type = self);
+
+helper context PLM!Clabject def: getInstances(): Set(PLM!Clabject) =
+	self.getClassificationsAsType()->iterate(t;result:OrderedSet(PLM!Clabject)=OrderedSet{}|result.append(t.instance));
+
+helper context PLM!Feature def: getClabject(): PLM!Clabject =
+	self.eContainer();
+
+helper context PLM!Connection def:getSource():PLM!Clabject=
+	self.eContainer()->oclIsTypeOf(PLM!Clabject);
+
+helper context PLM!Connection def : getTarget() : PLM!Clabjecct =
+	self.getDomain()->excluding(self.getSource());
+
+helper context PLM!Inheritance def: subtypes() : OrderedSet(PLM!Clabject) = 
+	self.subtype->iterate(s;result:OrderedSet(PLM!Clabject)=OrderedSet{}|result.append(s.subtype));
+	
+helper context PLM!Clabject def: getDirectSupertypes(): OrderedSet(PLM!Clabject) =
+
+PLM!Inheritance.allInstances()->select(i | i.subtypes()->includes(self))->iterate(i; result:OrderedSet(PLM!Clabeject)=OrderedSet{}|result->union(i.subtypes()));
+
+
+helper context PLM!Inheritance def: supertypes() : OrderedSet(PLM!Clabject) =
+	self.supertype->iterate(s;result:OrderedSet(PLM!Clabject)=OrderedSet{}|result.append(s.supertype));
+	
+	
+
+helper context PLM!Clabject def: getSubtypes(): Set(PLM!Clabject) =
+		PLM!Inheritance.allInstances() -> select(g | g.supertypes() ->
+				includes(self))->iterate(i; directResult: OrderedSet(PLM!Clabject)=OrderedSet{}|directResult->union(i.subtypes()))
+				;
+
+helper context PLM!Clabject def: getAllFeatures(): Set(PLM!Feature) =
+	let features: OrderedSet(PLM!Feature) =
+		self.getDirectSupertypes() -> including(self).feature -> asOrderedSet()
+	in
+		features -> select(f | features -> excluding(f) -> forAll(f2 | f.name = f2.name
+				implies not f.getClabject().getSubtypes() -> includes(f2.getClabject())))
+						-> asOrderedSet();
+
+helper context PLM!Clabject def: getAllAttributes(): Set(PLM!Attribute) =
+	self.getAllFeatures() -> select(f | f.oclIsTypeOf(PLM!Attribute)).
+			oclAsType(PLM!Attribute) -> asOrderedSet();
+
+helper context PLM!Clabject def: deleteAttributes(att: PLM!Attribute): PLM!Clabject =
+	self.getAllAttributes() -> excluding(att) -> asOrderedSet();
+
+--pushDownAttribute(C.f, I)
+helper context PLM!DeepModel def: pushDownAttributes(att: PLM!Attribute, en:
+		Set(PLM!Entity)): PLM!DeepModel =
+	let temp: PLM!Entity =
+		temp.content -> select(t | t.oclIsTypeOf(PLM!Classification)).type = att.
+				getClabject()
+	in
+		if en -> size() > 1 then
+			temp.potency = 0 and temp.content.subtype.subtype = en
+		else
+			temp = en -> first()
+		endif and temp.feature = att and temp.feature.durability = att.durability - 1 and
+				att.getClabject().deleteAttributs(att);
+
+--helper to support pushDownConnection(conn: PLM!Connection, en:Set(PLM!Entity))
+helper context PLM!Clabject def: getDefinedConnections(): OrderedSet(PLM!Connection) =
+	PLM!ConnectionEnd.allInstances() -> select(r | r.destination = self)->iterate(r;result:OrderedSet(PLM!Connection)=OrderedSet{}|result.append(r.connection))
+	->asOrderedSet();
+
+helper context PLM!Clabject def: getInheritedConnections(): Set(PLM!Connection) =
+	
+	self.getDirectSupertypes()->iterate(gd; result :Set(PLM!Connection) = Set{}|result->union(gd.getDefinedConnections())) -> asOrderedSet();
+
+helper context PLM!Clabject def: getConnections(): Set(PLM!Connection) =
+	self.getInheritedConnections() -> union(self.getDefinedConnections()) ->
+			asOrderedSet();
+
+helper context PLM!Clabject def: deleteConnection(conn: PLM!Connection): PLM!Clabject =
+	self.getConnections() -> excluding(conn) -> asOrderedSet();
+
+helper context PLM!Connection def: getDomain(source: PLM!Clabject): OrderedSet(PLM!Clabject) =
+	self.connectionEnd -> select(r | r.navigable and r.destination <> source)->
+	iterate(conn;pl:OrderedSet(PLM!Clabject)=OrderedSet{}|pl->append(conn.destination))
+			-> asOrderedSet();
+
+--pushDownConnection(conn: PLM!Connection, en:Set(PLM!Entity))
+helper context PLM!DeepModel def: pushDownConnection(conn: PLM!Connection, en:
+		Set(PLM!Entity)): PLM!DeepModel =
+	let temp: PLM!Entity =
+		temp.potency = 0 and temp.content.type = conn.getDomain(en -> first().content.
+				type) and conn.getDomain(en -> first().content.type).getInstances() ->
+				collect(i | i.content.supertype.supertype = temp) and en -> collect(e | e.
+				content = conn and e.content.connectionEnd.destination -> append(temp))
+				and en -> first().content.type -> deleteConnection(conn)
+	in
+		self;
+
+--helpers to support deleteEntity(level: PLM!Level, ele: PLM!Entity)
+helper context PLM!Level def: getEntities(): Set(PLM!Entity) =
+	self.content -> select(e | e.oclIsTypeOf(PLM!Entity)) -> asOrderedSet();
+
+--deleteEntity from level
+helper context PLM!Level def: deleteEntity(ele: PLM!Entity): PLM!Level =
+	self.content -> select(e | e.oclIsTypeOf(PLM!Entity)) -> excluding(ele) ->
+			asOrderedSet();
+
+helper context PLM!DeepModel def: deleteLevel(ele: PLM!Level): PLM!DeepModel =
+	self.content -> asSet() -> excluding(ele) -> asOrderedSet();
+
+helper context PLM!Level def: getDeepModel(): PLM!DeepModel =
+	self.eContainer();
+
+helper context PLM!Level def: getClassifiedLevel(): PLM!Level =
+	if (self.getDeepModel().content -> indexOf(self) = self.getDeepModel().content ->
+			size()) then
+		true
+	else
+		self.getDeepModel().content -> at(self.getDeepModel().content -> indexOf(self) +
+				1)
+	endif;
+
+--helpers for pushDownClabject(Entity)
+helper context PLM!OwnedElement def: getLevel(): PLM!Level =
+	if (self.eContainer().oclIsTypeOf(PLM!Level)) then
+			self.eContainer()
+		else
+			if (self.eContainer().oclIsKindOf(PLM!Clabject)) then
+			self.eContainer().getLevel()
+		else
+			if (self.eContainer().oclIsKindOf(PLM!Package)) then
+				self.eContainer().getLevel()
+			else
+				true
+			endif
+		endif
+		endif;
+
+helper context PLM!Level def: getLevel(): Integer =
+	self.getDeepModel().content -> indexOf(self) - 1;
+
+--pushDownClabject(Entity)
+helper context PLM!DeepModel def: pushDownClabject(ori: PLM!Entity): PLM!DeepModel =
+	let c: PLM!Entity =
+		c.levelIndex = ori.getLevel().getClassifiedLevel() and c.potency = ori.potency -
+				1 and c.name = ori.name
+	in
+		if ori.getDirectSupertype() -> size() = 1 then
+			c.content.supertype.supertype = ori.getDirectSupertype()
+		else
+			true
+		endif and if ori.getInstances() -> size() > 0 then
+			c.potency = 0
+		else
+			true
+		endif and ori.getInstances() -> collect(o | if ori.getDirectSupertype() -> size()
+				= 1 then
+				o.content.type = ori.getDirectSupertype()
+			else
+				true
+			endif and o.content.supertype.supertype = c) and ori.getAllAttributes() ->
+					collect(att | self.pushDownAttributes(att, c)) and if ori.getLevel().
+					deleteEntity(ori) -> size() = 0 then
+			self.deleteLevel(ori.getLevel())
+		else
+			ori.getLevel().deleteEntity(ori)
+		endif;
+
+--collapseHierarchy(ele: PLM!Entity)
+helper context PLM!DeepModel def: collapseInheritanceHierarchy(ele: PLM!Entity):
+		PLM!DeepModel =
+	ele.getSubtypes() -> collect(e | e.content.supertype.supertype = ele.
+			getDirectSupertypes() and e.feature = ele.getAllAttributes()) and if ele.
+			getLevel().deleteEntity(ele) -> size() = 0 then
+		self.deleteLevel(ele.getLevel())
+	else
+		ele.getLevel().deleteEntity(ele)
+	endif;
+
+--collapseClabjectWithInstance(ori: PLM!Entity)
+helper context PLM!DeepModel def: collapseClabjectWithInstance(ori: PLM!Entity):
+		PLM!DeepModel =
+	self.pushDownClabject(ori) and self.collapseInheiritanceHierarchy(ori);
+
+--helpers to support model refactoring
+helper context PLM!Clabject def: getClassificationAsInstance(): Set(PLM!Classification) =
+	PLM!Classification.allInstances() -> select(i | i.instance = self);
+
+helper context PLM!Clabject def: getTypes(): Set(PLM!Clabject) =
+	let directTypes: OrderedSet(PLM!Clabject) =
+		self.getClassificationsAsInstance().type -> asOrderedSet()
+	in
+		directTypes -> union(directTypes.getDirectSupertypes() -> asOrderedSet()) ->
+				asOrderedSet();
+
+helper context PLM!Entity def: hasConnections: Boolean =
+	self.getConnections() -> size() > 0;
+
+helper context PLM!Entity def: hasTypes: Boolean =
+	self.getTypes() -> size() > 0;
+
+helper context PLM!Entity def: hasInstances: Boolean =
+	self.getInstances() -> size() > 0;
+
+helper context PLM!Entity def: hasSupertypes: Boolean =
+	self.getDirectSupertypes() -> size() > 0;
+
+helper context PLM!Entity def: hasSubtypes: Boolean =
+	self.getSubtypes() -> size() > 0;
+
+helper context PLM!Level def: isNotEmpty: Boolean =
+	self.getEntities() -> size() > 0;
+
+helper context PLM!Entity def: hasConnectionAsSource: Boolean =
+	self.content -> select(c | c.oclIsTypeOf(PLM!Connection)) -> any(conn | conn.
+			getDomain(conn));
+
+helper context PLM!Level def: nextLevel(l: PLM!Level): PLM!Level =
+	self.getLevelAtIndex(l.getLevel() + 1);
+
+--model refactoring
+helper context PLM!DeepModel def: refactoring: PLM!DeepModel =
+	if self.content->asSet()->size() = 2 then self 
+	else
+	self.content -> asOrderedSet() -> collect(level | let entitySet: Set(PLM!Entity) =
+			level.getEntities()
+		in
+			entitySet -> collect(en | --case one
+				if en.hasConnections = false and en.hasSupertypes = false and en.
+						hasSubtypes = false then
+					if en.hasInstances then
+						self.collapseClabjectWithInstance(en)
+					else
+						level.deleteEntity(en)
+					endif
+				else
+					true
+				endif --case two
+					 and if en.hasConnectionAsSource and en.hasSupertypes = false and en.hasSubtypes = false and en.hasInstances and en.content.getDomain(en).hasInstances then
+					self.pushDownClabject(en)
+				else
+					true
+				endif and if en.hasConnectionAsSource and en.hasSupertypes = false and en.
+						hasSubtypes = false and en.hasInstances = false then
+					self.pushDownClabject(en)
+				else
+					true
+				endif and if en.hasConnectionAsSource and en.hasSubtypes = false and en.
+						getDirectSupertypes() -> size() = 1 and en.hasInstances then
+					self.pushDownClabject(en)
+				else
+					true
+				endif and if en.hasConnectionAsSource and en.hasSubtypes = false and en.
+						getDirectSupertypes() -> size() = 1 and en.hasInstances = false
+						then
+					self.pushDownClabject(en)
+				else
+					true
+				endif and if en.hasConnecions = false and en.hasSubtypes = false and en.
+						getDirectSupertypes() -> size() = 1 and en.hasInstances then
+					self.collapseClabjectWithInstance(en)
+				else
+					self.pushDownClabject(en)
+				endif and if en.hasConnecions = false and en.hasSubtypes and en.
+						hasSupertypes = false and en.hasInstances = false then
+					self.collapseInheritanceHierarchy(en)
+				else
+					true
+				endif and if en.hasConnectionAsSource and en.hasSubtypes and en.
+						hasSupertypes = false and en.hasInstances = false then
+					self.collapseInheritanceHierarchy(en)
+				else
+					true
+				endif and if en.hasSubtypes and en.hasSupertypes and en.hasInstances =
+						false then
+					self.collapseInheritanceHierarchy(en)
+				else
+					true
+				endif and if en.hasSubtypes and en.hasSupertypes and en.
+						hasConnectionAsSource and en.hasInstances = false then
+					self.collapseInheritanceHierarchy(en)
+				else
+					true
+				endif
+)) endif;
+
+--rules
+rule Level2Graph {
+	from
+		le: PLM!Level (
+			le.oclIsTypeOf(PLM!Level)
+		)
+	to
+		g: OWL!OWLGraph (
+			ontology <- le.getDeepModel(),
+			uriRef <- uri
+		),
+		d: OWL!Document (
+			namespaceDefinition <- nd,
+			localName <- ln,
+			xmlBase <- xb
+		),
+		ln: OWL!LocalName (
+			name <- le.name,
+			uriRef <- uri
+		),
+		uri: OWL!URIReference (
+			uri <- u_r_i
+		),
+		u_r_i: OWL!UniformResourceIdentifier (
+			name <- thisModule.addNamespace(le.name)
+		),
+		xb: OWL!Namespace (
+			namespaceURIRef <- uri
+		),
+		nd: OWL!NamespaceDefinition (
+			namespacePrefix <- thisModule.addNamespace(le.name),
+			namespace <- xb
+		)
+}
+rule DeepModel2OWLOntology {
+	from
+		dm: PLM!DeepModel (
+			dm.oclIsTypeOf(PLM!DeepModel)
+		)
+	to
+		o: OWL!OWLOntology (
+			uriRef <- u
+		),
+		u: OWL!URIReference (
+			fragmentIdentifier <- l,
+			uri <- uri
+		),
+		l: OWL!LocalName (
+			name <- dm.name
+		),
+		uri: OWL!UniformResourceIdentifier (
+			name <- thisModule.addNamespace(dm.name)
+		)
+}
+
+rule Enumeration2EnumeratedClass {
+	from
+		e: PLM!Enumeration
+	to
+		oe: OWL!EnumeratedClass (
+			OWLOneOf <- ind,
+			--@q1 Assigning a Collection to a single-valued feature
+			uriRef <- u,
+			label <- label
+		),
+		ind: OWL!Individual (
+			uriRef <- u_ind
+		),
+		u_ind: OWL!URIReference (
+			fragmentIdentifier <- l_ind,
+			uri <- uri_ind
+		),
+		l_ind: OWL!LocalName (
+			name <- e.literal
+		),
+		uri_ind: OWL!UniformResourceIdentifier (
+			name <- e.literal
+		),
+		label: OWL!PlainLiteral (
+			lexicalForm <- e.name
+		),
+		u: OWL!URIReference (
+			fragmentIdentifier <- l,
+			uri <- uri
+		),
+		l: OWL!LocalName (
+			name <- e.name
+		),
+		uri: OWL!UniformResourceIdentifier (
+			name <- e.name
+		)
+}
+
+rule Atttribute2DatatypeProperty {
+	from
+		att: PLM!Attribute (
+			att.oclIsTypeOf(PLM!Attribute) and att.durability = 1 and att.isPrimitive(att.
+					datatype) = true
+		)
+	using {
+		clb: PLM!Clabject = att.getClabject();
+	}
+	to
+		da: OWL!OWLDatatypeProperty (
+			uriRef <- u,
+			domain <- rcl,
+			range <- thisModule.cast2OWLClass(att) --cast string to OWLClass firstly
+			
+		),
+		u: OWL!URIReference (
+			fragmentIdentifier <- l,
+			uri <- uri
+		),
+		l: OWL!LocalName (
+			name <- att.name
+		),
+		uri: OWL!UniformResourceIdentifier (
+			name <- att.name
+		),
+		rcl: OWL!RDFSClass (
+			uriRef <- u_rcl,
+			label <- label_rcl
+		),
+		label_rcl: OWL!PlainLiteral (
+			lexicalForm <- clb.name
+		),
+		u_rcl: OWL!URIReference (
+			fragmentIdentifier <- l_rcl,
+			uri <- uri_rcl
+		),
+		l_rcl: OWL!LocalName (
+			name <- clb.name
+		),
+		uri_rcl: OWL!UniformResourceIdentifier (
+			name <- clb.name
+		)
+		do{
+		thisModule.addFunctionalProperty(da);
+		
+		}
+}
+
+lazy rule cast2OWLClass {
+	from
+		att: PLM!Attribute (
+			att.isPrimitive(att.datatype) = true
+		)
+	to
+		oc: OWL!OWLClass (
+			uriRef <- u
+		),
+		u: OWL!URIReference (
+			fragmentIdentifier <- l,
+			uri <- uri
+		),
+		l: OWL!LocalName (
+			name <- thisModule.dataTypeMap.get(att.datatype)
+		),
+		uri: OWL!UniformResourceIdentifier (
+			name <- thisModule.dataTypeMap.get(att.datatype)
+		)
+}
+
+
+--transformation class
+rule NewModel2OWL {
+	from
+		dp: PLM!DeepModel (
+			dp.oclIsTypeOf(PLM!DeepModel)
+		)
+	using {
+		nM: PLM!DeepModel = dp.refactoring;
+		type: PLM!Entity = nM.getLevelAtIndex(0).getEntities() -> select(t | t.potency =
+				1);
+		instance: PLM!Entity = nM.getLevelAtIndex(1).getEntities() -> select(t | t.
+				potency = 0);
+	}
+	do {
+		thisModule.PLMEntity2OWLClass(type); 
+		thisModule.PLMEntity2Individual(instance); 
+	}
+}
+
+
+-- the temp rules
+rule PLMEntity2OWLClass(en: PLM!Entity){
+	
+	to
+		cl: OWL!OWLClass (
+			uriRef <- u,
+			subClassOf <- en.getSubtypes(),
+			superClass <- en.getDirectSupertypes()
+		),
+		u: OWL!URIReference (
+			fragmentIdentifier <- l,
+			uri <- uri
+		),
+		l: OWL!LocalName (
+			name <- en.name
+		),
+		uri: OWL!UniformResourceIdentifier (
+			name <- en.name
+		)
+}
+
+rule PLMEntity2Individual(en: PLM!Entity){
+	to
+		ind: OWL!Individual (
+			uriRef <- u,
+			type <- en.getTypes()
+		),
+		u: OWL!URIReference (
+			fragmentIdentifier <- l,
+			uri <- uri
+		),
+		l: OWL!LocalName (
+			name <- en.name
+		),
+		uri: OWL!UniformResourceIdentifier (
+			name <- en.name
+		)
+}
+
+rule Connection2OWLObjectProperty {
+	from
+		co: PLM!Connection (
+			co.isBinary() 
+		)
+	using {
+		d: PLM!Clabject = co.getSource(); 
+	
+		r: PLM!Clabject = co.getTarget();
+	}
+	to
+		ob: OWL!OWLObjectProperty (
+			uriRef <- u,
+			domain <- d.name,
+			
+			range <- r.name
+		),
+		u: OWL!URIReference (
+			fragmentIdentifier <- l,
+			uri <- uri
+		),
+		l: OWL!LocalName (
+			name <- co.name
+		),
+		uri: OWL!UniformResourceIdentifier (
+			name <- co.name
+		)
+		
+	do {
+	
+		if ( ( co.connectionEnd.upper = 1) and ( co.connectionEnd.lower = 1) )
+			thisModule.addFunctionalProperty(co);
+		if ( co.connectionEnd.upper = co.connectionEnd.lower ) 
+				thisModule.addCardinality( co, co.getTarget().type );
+			else
+				if (( co.connectionEnd.upper = 0-1 ) and ( co.connectionEnd.lower >= 0 ))
+					thisModule.addMinCardinality( co );
+				else  {
+					thisModule.addMinCardinality( co);
+					thisModule.addMaxCardinality( co );
+				}
+		
+	}
+}
+
+
+rule Connection2SymmetricProperty {
+	from
+		co: PLM!Connection (
+			co.isSymmetric()
+		)
+	using {
+		first: PLM!Clabject = co.getDomain()->first();
+				
+	
+		last: PLM!Clabject = co.getDomain()->last();
+	}
+	to
+		sy: OWL!SymmetricProperty (
+			domain <- first.name,
+			range <- last.name,
+			uriRef <- o_u
+		),
+		o_u: OWL!URIReference (
+			fragmentIdentifier <- o_l,
+			uri <- o_uri
+		),
+		o_l: OWL!LocalName (
+			name <- co.name + '.' + first.name + '.' + last.name
+		),
+		o_uri: OWL!UniformResourceIdentifier (
+			name <- co.name + '.' + first.name + '.' + last.name
+		)
+}
+
+rule Connection2ReflexiveProperty {
+	from
+		co: PLM!Connection (
+			co.isRefelxive()
+		)
+	using {
+		ele: PLM!Clabject = co.getParticipantForMoniker(co.getMoniker().first); --the
+				-- connected element
+	
+	}
+	to
+		sy: OWL!SymmetricProperty (
+			domain <- ele.name,
+			--domain = range = self
+			range <- ele.name,
+			uriRef <- o_u
+		),
+		o_u: OWL!URIReference (
+			fragmentIdentifier <- o_l,
+			uri <- o_uri
+		),
+		o_l: OWL!LocalName (
+			name <- co.name + '.' + ele.name
+		),
+		o_uri: OWL!UniformResourceIdentifier (
+			name <- co.name + '.' + ele.name
+		)
+}
+
+rule Attributes2OWLStatement {
+	from
+		att: PLM!Attribute (
+			att.oclIsTypeOf(PLM!Attribut) and att.mutability = 0 and att.datatype.
+					oclIsTypeOf(PLM!Datatypes)
+		)
+	to
+		sta: OWL!OWLStatement (
+			RDFsubject <- att.getClabject().name,
+			RDFpredicate <- att.name,
+			RDFobject <- att.value
+		)
+}
+
+rule Connection2OWLStatement {
+	from
+		con: PLM!Connection (
+			con.potency = 0 and con.oclIsTypeOf(PLM!Connection)
+		)
+	to
+		sta: OWL!OWLStatement (
+			RDFsubject <- con.getDomain().name,
+			RDFpredicate <- con.name,
+			RDFobject <- con.getNotDomain().name
+		)
+}
+
+rule addFunctionalProperty( att : PLM!Attribute ) {
+	to
+		o: OWL!FunctionalProperty (
+			isDefinedBy <- att
+		)
+}
+
+rule addCardinalityRestriction( end : PLM!Connection ) {
+	to
+		c : OWL!CardinalityRestriction (
+			superClass <- end.getSource(),
+			OWLCardinality <- literal,
+			OWLOnProperty <- end
+		),
+		literal : OWL!TypedLiteral (
+			lexicalForm <- end.connectionEnd.upper,
+			datatypeURI <- thisModule.getIntegerURI()
+		)
+}
+
+rule addMaxCardinalityRestriction(end : PLM!Connection ) {
+	to
+		c : OWL!MaxCardinalityRestriction (
+			superClass <- end.getSource(),
+			OWLMaxCardinality <- literal,
+			OWLOnProperty <- end
+		),
+		literal : OWL!TypedLiteral (
+			lexicalForm <- end.connectionEnd.upper,
+			datatypeURI <- thisModule.getIntegerURI()
+		)
+}
+
+rule addMinCardinalityRestriction( end : PLM!ConnectionEnd  ) {
+	to
+		c : OWL!MinCardinalityRestriction (
+			superClass <- end.getSource(),
+			OWLMinCardinality <- literal,
+			OWLOnProperty <- end
+		),
+		literal : OWL!TypedLiteral (
+			lexicalForm <- end.connectionEnd.lower,
+			datatypeURI <- thisModule.getIntegerURI()
+		)
+}

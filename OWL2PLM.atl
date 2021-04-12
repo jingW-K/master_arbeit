@@ -1,0 +1,146 @@
+-- @path PLM=/testProject/PLM.ecore
+-- @path OWL=/testProject/OWL.ecore
+
+module OWL2PLM;
+create OUT: PLM from IN: OWL;
+
+	
+helper context OWL!RDFSResource def: getURI() : String =
+	let r : OWL!UniformResourceIdentifier = 
+		self.uriRef->any( e | e.oclIsKindOf(OWL!URIReference)).uri
+	in if not r.oclIsUndefined() then r.name else '' endif;
+
+helper context OWL!RDFSResource def: getLabel() : String =
+	let r : OWL!PlainLiteral =
+		self.label->select( e | e.oclIsTypeOf( OWL!PlainLiteral ))->first()
+	in if r.oclIsUndefined() then '' else r.lexicalForm endif	;
+
+helper context OWL!CardinalityRestriction def: getDatatypeURI() : String = 
+	let d : OWL!URIReference = self.OWLCardinality.datatypeURI
+	in if not d.oclIsUndefined()
+		then d.uri.name
+		else ''
+	endif;
+
+helper context OWL!MaxCardinalityRestriction def: getDatatypeURI() : String = 
+	let d : OWL!URIReference = self.OWLMaxCardinality.datatypeURI
+	in if not d.oclIsUndefined()
+		then d.uri.name
+		else ''
+	endif;
+
+helper context OWL!MinCardinalityRestriction def: getDatatypeURI() : String = 
+	let d : OWL!URIReference = self.OWLMinCardinality.datatypeURI
+	in if not d.oclIsUndefined()
+		then d.uri.name
+		else ''
+	endif;
+
+helper def: dataTypeMap: Map(String, String) =
+	Map{('String',
+			'http://www.w3.org/2001/XMLSchema#string'),
+			('Real',
+			'http://www.w3.org/2001/XMLSchema#real'),
+			('Integer',
+			'http://www.w3.org/2001/XMLSchema#Integer'),
+			('Natural',
+			'http://www.w3.org/2001/XMLSchema#unsignedInt'),
+			('Boolean',
+			'http://www.w3.org/2001/XMLSchema#boolean'),
+			('Probability',
+			'http://www.w3.org/2001/XMLSchema#unsignedFloat'),
+			('Percent',
+			'http://www.w3.org/2001/XMLSchema#unsignedDouble'),
+			('Money',
+			'http://www.w3.org/2001/XMLSchema#double'),
+			('Character',
+			'http://www.w3.org/2001/XMLSchema#string' )};
+
+
+helper def:initialP : Integer = 0; --initial potency of instance
+helper def:levelIndex : Integer = 1; 
+--rules
+rule OWLOntology2DeepModel{
+	from o:OWL!OWLOntology(
+	     o.oclIsTypeOf(OWL!OWLOntology)
+		 )    
+	
+	to dm:PLM!DeepModel(
+		 name <- o.uriRef.fragmentIdentifier.name
+		)	
+}
+
+rule RDFSDataType2PLMDatatype {
+	from dt : OWL!RDFSDataType		
+	to p : PLM!Attribute(
+		datatype <- thisModule.dataTypeMap.get(dt.uriRef.uri.name)
+	)		 
+}
+
+
+rule Individual2Entity{
+	from ind:OWL!Individual
+	to cl:PLM!Entity(
+		potency <- thisModule.initialP,
+		name <- ind.uriRef.fragmentIdentifier.name,
+		levelIndex <- thisModule.levelIndex + 1
+		)
+}
+
+rule OWLClass2Entity{
+	from cl:OWL!OWLClass(
+		cl.oclIsTypeOf(OWL!OWLClass)
+		)
+	to entity:PLM!Entity(
+		potency <- thisModule.initialP + 1, 
+		name <- cl.uriRef.fragmentIdentifier.name,
+		levelIndex <- thisModule.levelIndex
+		
+	)
+}
+
+
+rule EnumeratedClass2Enumeration{
+	from o:OWL!EnumeratedClass
+	to e:PLM!Enumeration(
+		literal <- o.OWLOneOf,
+		name <- o.label.lexicalForm
+		)
+}
+
+rule InverseFunctionalProperty2Connection{
+	from o:OWL!InverseFunctionalProperty(
+		o.oclIsTypeOf(OWL!InverseFunctionalProperty)
+		)
+	to co:PLM!ConnectionEnd(
+		moniker <- o.label.lexicalForm,
+		connection <- o.domain,
+		type <- o.OWLInverseOf
+
+		)
+}
+
+rule DatatypeProperty2Attribute{
+	from da : OWL!OWLDatatypeProperty
+		
+	to att : PLM!Attribute(
+		datatype <- thisModule.dataTypeMap.get(da.uriRef.fragmentIdentifier.name),
+		value <- da.getLabel(),
+		durability <- thisModule.initialP
+		)
+}
+
+rule ObjectProperty2Connection{
+	from ob : OWL!OWLObjectProperty
+	to  con : PLM!Connection(
+		connectionEnd <- end
+		),
+	 end : PLM!ConnectionEnd(
+			destination <- ob.domain
+			)
+}
+			
+
+
+
+
